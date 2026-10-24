@@ -369,7 +369,8 @@ static void rescue_case(const char *name, const char *fs, const char *reason, co
     int ok = !R.a.ssd && !strcmp(R.source, "rescue") && !strcmp(R.entry, "rescue") && !strcmp(R.reason, reason) &&
              (!detail_prefix || !strncmp(R.detail, detail_prefix, strlen(detail_prefix))) &&
              R.publish_rc == 0 && R.has_abi && R.abi == 1 && !strcmp(R.version, "rev11-test") && handoff_clean(why, sizeof(why)) &&
-             !R.wr_n;   /* the rescue set gets no write ranges from the loader */
+             /* every B case is decided after the GPT check, so the rescue set gets the verified root range */
+             R.wr_n >= 16 && R.wr_n % 16 == 0 && wr_at(&R, 0) == L1_P4_FIRST && wr_at(&R, 1) == L1_P4_END;
     check(name, ok, extra);
 }
 
@@ -466,6 +467,26 @@ int main(int argc, char **argv)
     rescue_case("B24 Image memory over the window: too-large", "image-window", "too-large", NULL);
     rescue_case("B25 board.dtb is not a DTB (CRC matches): bad-dtb", "bad-dtb", "bad-dtb", NULL);
     rescue_case("B26 board.dtb truncated (size and CRC match the file): bad-dtb", "truncated-dtb", "bad-dtb", NULL);
+
+    /* G: a GPT that does not match the pinned root (PARTUUID, or its first LBA) is refused before the
+     * file system is read, and that rescue boot must publish no write ranges (Linux then has no verified range at all).
+     * (l1_gpt_find_p4 accepts the exact range with the pinned PARTUUID or a Linux/basic-data type.) */
+    {
+        uint8_t *e = gptbuf + 2 * 4096 + 3 * 128, *h = gptbuf + 4096;
+        open_fs("ok");
+        e[16] ^= 0xff; e[0] ^= 0xff; put32(h + 88, crc32b(gptbuf + 2 * 4096, 128 * 128)); put32(h + 16, 0); put32(h + 16, crc32b(h, 92));
+        do_run(&R, 1, 1, -1);
+        snprintf(extra, sizeof(extra), "source=%s reason=%s detail='%s' wr=%d", R.source, R.reason, R.detail, R.wr_n);
+        check("G1 root PARTUUID and type differ: rescue, ssd-unreadable, no write ranges",
+              !R.a.ssd && !strcmp(R.source, "rescue") && !strcmp(R.reason, "ssd-unreadable") && !R.wr_n && R.publish_rc == 0, extra);
+        build_gpt();
+        put64(e + 32, L1_P4_FIRST + 1); put32(h + 88, crc32b(gptbuf + 2 * 4096, 128 * 128)); put32(h + 16, 0); put32(h + 16, crc32b(h, 92));
+        do_run(&R, 1, 1, -1);
+        snprintf(extra, sizeof(extra), "source=%s reason=%s detail='%s' wr=%d", R.source, R.reason, R.detail, R.wr_n);
+        check("G2 root first LBA differs: rescue, ssd-unreadable, no write ranges",
+              !R.a.ssd && !strcmp(R.source, "rescue") && !strcmp(R.reason, "ssd-unreadable") && !R.wr_n && R.publish_rc == 0, extra);
+        build_gpt();
+    }
 
     /* C: limits */
     open_fs("entry-maxcmdline");

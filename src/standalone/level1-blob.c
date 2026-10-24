@@ -725,6 +725,20 @@ static const char *reason_of(const struct l1_rec *r)
     return l1_reason(r->st, r->res.detail);
 }
 
+/* the policy step itself returned this status, and every one of these is decided after l1_gpt_find_p4() accepted the root */
+static int gpt_verified_rescue(const struct l1_rec *r)
+{
+    if (r->st != r->res.status) return 0;
+    switch (r->res.status) {
+    case L1_PENDING: case L1_EXT4: case L1_NO_CONF: case L1_BAD_CONF: case L1_BAD_ABI: case L1_NO_ENTRY: case L1_NOT_FOUND:
+    case L1_SIZE: case L1_DIGEST: case L1_TOO_LARGE: case L1_IMAGE_HEADER: case L1_BAD_DTB: case L1_SHA_IMAGE: case L1_SHA_INITRD:
+    case L1_NVME_READ:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 int l1_publish(const struct l1_host *h, void *state, void *dt, size_t capacity)
 {
     struct l1_rec *r = state;
@@ -750,7 +764,11 @@ int l1_publish(const struct l1_host *h, void *state, void *dt, size_t capacity)
     if (detail[0]) rc |= set_str(h, dt, c, "m4,boot-detail", detail);
     /* The partitions this boot checked against the GPT (exact range and PARTUUID): Linux's NVMe write guard takes its
      * ranges from here (<first_hi first_lo end_hi end_lo> per partition, 4 KiB units, end exclusive), the root first. */
-    if (r && r->ssd) {
+    /* A rescue boot whose cause was found after the GPT check (boot-pending, a dirty ext4 left by a power cut, a bad
+     * loader.conf or entry) gets the same verified ranges: the rescue system must be able to replay the journal, remove
+     * boot-pending or `m4-boot select` another entry. Without them Linux falls back to the board DT's ranges, which only
+     * describe the disk of the unit the DT was written on. A GPT refusal or an ANS/NVMe failure before it publishes nothing. */
+    if (r && (r->ssd || gpt_verified_rescue(r))) {
         uint8_t wr[16 * (1 + L1_EXTRA_N)];
         unsigned n = 0;
         be32(wr, (uint32_t)(L1_P4_FIRST >> 32)); be32(wr + 4, (uint32_t)L1_P4_FIRST);
