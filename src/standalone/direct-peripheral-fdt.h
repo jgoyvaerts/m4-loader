@@ -8,6 +8,16 @@
 #include "usb-adt-gates.h"
 #include "usb-contract-id.h"
 
+/* macOS 26.6.2 installed from Recovery (25G241) reports the gated OS firmware with a .701.1 suffix: the same contract. */
+static const unsigned char m4_usb_os_firmware_recovery[256] = "mBoot-18000.161.10.701.1";
+
+static int m4_usb_gate_matches(const struct m4_usb_adt_gate *g, const void *p, unsigned length)
+{
+    if (p && length == g->size && !memcmp(p, g->bytes, length)) return 1;
+    return p && !strcmp(g->path, "/chosen") && !strcmp(g->key, "firmware-version") &&
+           length == sizeof(m4_usb_os_firmware_recovery) && !memcmp(p, m4_usb_os_firmware_recovery, length);
+}
+
 static int m4_direct_peripheral_fdt(void *dt, size_t capacity,
                                    codec_getprop get, void *ctx)
 {
@@ -40,7 +50,7 @@ static int m4_direct_peripheral_fdt(void *dt, size_t capacity,
         const struct m4_usb_adt_gate *g = &m4_usb_adt_gates[i];
         unsigned length = 0;
         const void *p = get(ctx, g->path, g->key, &length);
-        if (!p || length != g->size || memcmp(p, g->bytes, length)) {
+        if (!m4_usb_gate_matches(g, p, length)) {
             usb = 0;
             break;
         }

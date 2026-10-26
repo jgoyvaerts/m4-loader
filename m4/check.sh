@@ -13,6 +13,8 @@
 #   pmp       rev 13 m4_pmp_publish() on the real ADT and a final tree (pmp-test)
 #   rev14     rev 14: aop-dapf.c on fake MMIO and the real ADT, the AOP segment iommu-addresses, the Bluetooth admission fix
 #             (the m4.13 two-port PCIe node), the /chosen records m4,dapf-*, m4,bt-admission, m4,boot-timing-v1
+#   dcpext    m4_dcpext_fixup() (the external DCPs' firmware memory) on the real ADT: placeholders filled with the values of the static
+#             dtsi, refusals, fuzzed ADTs (m4/tests/dcpext). Not part of the reference file; skipped before the fix-up exists.
 #   audit     the per-unit checks of m4/tools (audit-tree.py on the checkout, gates-unit.py check, usb-contract-id.py) against the ADT;
 #             skipped if those tools are not in the repo. Not in the default run when PRIVATE is unset.
 #
@@ -340,6 +342,13 @@ step_rev14() {
 }
 
 # ---- 9. the per-unit audit tools (m4/tools, HA) ---------------------------------------------------------------
+step_dcpext() {
+  need_built; need_private; need dtc
+  if ! grep -q m4_dcpext_fixup "$TREE/src/standalone/dcp-fdt.c"; then echo "no m4_dcpext_fixup in this tree (before the dcpext regions)"; return 77; fi
+  mkdir -p "$WORK/dcpext"
+  bash $M4_HERE/tests/dcpext/run-dcpext-test.sh "$TREE" "$ADT" "$WORK/dcpext" | tee "$WORK/dcpext/run.out"
+  tail -1 "$WORK/dcpext/run.out" | grep -q ' 0 failed'
+}
 step_audit() {
   need_built; need_private; local T=$M4_HERE/tools
   [ -f "$T/audit-tree.py" ] && [ -f "$T/gates-unit.py" ] && [ -f "$T/usb-contract-id.py" ] || { echo "m4/tools has no audit tools in this checkout"; return 77; }
@@ -349,12 +358,12 @@ step_audit() {
   echo "SUMMARY tree findings ${n:-0}; $(tail -1 "$WORK/gates-unit.out")"
 }
 
-if [ "${1:-}" = --list ]; then sed -n 's/^#   \([a-z0-9]*\) .*/\1/p' "$0" | head -9; exit 0; fi
+if [ "${1:-}" = --list ]; then sed -n 's/^#   \([a-z0-9]*\) .*/\1/p' "$0" | head -12; exit 0; fi
 WANT=${*:-all}
 echo "m4 loader check: SRC=$SRC VERSION=$VERSION WORK=$WORK"
-for s in build objects qemu e2e decision harness pmp rev14 audit; do step $s; done
+for s in build objects qemu e2e decision harness pmp rev14 dcpext audit; do step $s; done
 { echo "# observed by m4/check.sh ($(date -u +%Y-%m-%dT%H:%MZ)); copy to m4/reference/ to make it the reference of a new revision"; echo "version $VERSION"
-  cat "$WORK"/obs/{build,objects,qemu,e2e,decision,harness,pmp,rev14,audit}.txt 2>/dev/null; [ -f "$WORK/objects.txt" ] && sed 's/^\([0-9a-f]*\)  \(.*\)$/object \1 \2/' "$WORK/objects.txt"; } > "$WORK/observed.txt"
+  cat "$WORK"/obs/{build,objects,qemu,e2e,decision,harness,pmp,rev14,dcpext,audit}.txt 2>/dev/null; [ -f "$WORK/objects.txt" ] && sed 's/^\([0-9a-f]*\)  \(.*\)$/object \1 \2/' "$WORK/objects.txt"; } > "$WORK/observed.txt"
 echo "----"
 if [ $FAILS -gt 0 ]; then echo "CHECK FAILED: $PASSES passed, $FAILS failed, $SKIPS skipped (logs: $WORK/logs)"; exit 1
 elif [ $SKIPS -gt 0 ]; then echo "CHECK PASSED with $SKIPS skipped: $PASSES passed (logs: $WORK/logs)"; exit 0

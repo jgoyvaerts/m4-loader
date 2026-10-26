@@ -3,11 +3,12 @@
 #   build-harness.sh TREE OUT-BINARY BOARD.DTB WORK-DIR
 # TREE = a source checkout (needs src/, sysinc/). Linked at 0x10005280000 so that the addresses the emitters compare
 # lie where the loader's do. Host compiler (gcc, aarch64 Linux).
+# src/ is -I, not -idirafter: a host header of the same name (cdparanoia ships /usr/include/utils.h) must not win.
 set -e
 TREE=$(cd "${1:?usage: build-harness.sh TREE OUT BOARD.DTB WORK}" && pwd); OUT=$(readlink -f "${2:?OUT}"); BOARD=$(readlink -f "${3:?BOARD.DTB}")
 HERE=$(cd "$(dirname "$0")" && pwd); T=$HERE/../tools; W=$(mktemp -d "${4:?WORK}/harness-obj.XXXX")
 F="-w -O1 -g -DM4_LOADER -DM4_MEDIA_TEST -DM4_DCP_STAGE=3"
-INC="-idirafter $TREE/src -idirafter $TREE/src/libfdt -idirafter $TREE/sysinc -idirafter $TREE/src/standalone"
+INC="-I$TREE/src -idirafter $TREE/src/libfdt -idirafter $TREE/sysinc -idirafter $TREE/src/standalone"
 for f in bt-boot-admission bt-boot-current-adt direct-smp dart-capture dart-tables dart-preserve display-ownership metadata memory dcp-fdt media-probe fixups display-handoff-native fdt-check; do
   gcc -c $F $INC $TREE/src/standalone/$f.c -o $W/$f.o; done
 # cpu-idle-regs.c reads MPIDR/MIDR/CurrentEL: replaced by the values of this SoC (host build)

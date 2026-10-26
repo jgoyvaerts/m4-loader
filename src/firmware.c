@@ -236,6 +236,13 @@ void firmware_parse_version(const char *s, u32 *out)
 
 static void detect_firmware(struct fw_version_info *info, const char *ver)
 {
+    /* macOS 26.6.2 installed from Recovery (25G241) reports the 26.6.2 iBoot train
+     * with a .701.1 suffix */
+    if (!strcmp(ver, "mBoot-18000.161.10.701.1")) {
+        *info = fw_versions[V26_6_2];
+        info->iboot = ver;
+        return;
+    }
     for (size_t i = 0; i < ARRAY_SIZE(fw_versions); i++) {
         if (!strcmp(fw_versions[i].iboot, ver)) {
             *info = fw_versions[i];

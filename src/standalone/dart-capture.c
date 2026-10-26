@@ -107,7 +107,9 @@ int m4_dart_prepare(struct m4_dart_capture *c,const void *raw,uint32_t bytes){
     !equal(tree,arm,"compatible","arm-io,t6041",13))return refuse(c,-4);
  /* The observed OS-firmware field is padded to 256 bytes; every byte matters. */
  static const unsigned char os_firmware[256]="mBoot-18000.161.10";
- if(!equal(tree,chosen,"firmware-version",os_firmware,sizeof(os_firmware))||
+ static const unsigned char os_firmware_recovery[256]="mBoot-18000.161.10.701.1"; /* 26.6.2 installed from Recovery (25G241) */
+ if((!equal(tree,chosen,"firmware-version",os_firmware,sizeof(os_firmware))&&
+     !equal(tree,chosen,"firmware-version",os_firmware_recovery,sizeof(os_firmware_recovery)))||
     !equal(tree,chosen,"system-firmware-version","mBoot-20457.1.29",17))return refuse(c,-5);
  static const uint64_t dcp_reg[]={UINT64_C(0x202340000),0x20000,UINT64_C(0x300578000),0x4000};
  static const uint64_t disp_reg[]={UINT64_C(0x202300000),0xc000,UINT64_C(0x202314000),0x4000,UINT64_C(0x300578000),0x4000};

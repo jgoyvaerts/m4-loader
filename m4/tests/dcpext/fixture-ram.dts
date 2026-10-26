@@ -1,0 +1,36 @@
+/dts-v1/;
+/* Test board: dcpext0/1 as the kernel DTS describes them with the loader contract (three disabled placeholders each),
+ * a memory node of the real kind (outside every dcpext region), disabled DART/mailbox neighbours that must not change. */
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "apple,j616s", "apple,t6040", "apple,arm-platform";
+	chosen { };
+	aliases { };
+	memory@10000000000 { device_type = "memory"; reg = <0x100 0x0 0x10 0x0>; };
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		dcpext0_text: dcpext0-text { compatible = "apple,asc-mem"; reg = <0 0 0 0>; no-map; status = "disabled"; };
+		dcpext0_data: dcpext0-data { compatible = "apple,asc-mem"; reg = <0 0 0 0>; no-map; status = "disabled"; };
+		dcpext0_heap: dcpext0-heap { compatible = "apple,asc-mem"; reg = <0 0 0 0>; no-map; status = "disabled"; };
+		dcpext1_text: dcpext1-text { compatible = "apple,asc-mem"; reg = <0 0 0 0>; no-map; status = "disabled"; };
+		dcpext1_data: dcpext1-data { compatible = "apple,asc-mem"; reg = <0 0 0 0>; no-map; status = "disabled"; };
+		dcpext1_heap: dcpext1-heap { compatible = "apple,asc-mem"; reg = <0 0 0 0>; no-map; status = "disabled"; };
+	};
+	dcpext0: dcpext0 {
+		compatible = "apple,t6041-dcpext", "apple,dcpext";
+		reg = <0x3 0xa2e00000 0x0 0x4000>;
+		memory-region = <&dcpext0_text>, <&dcpext0_data>, <&dcpext0_heap>;
+		memory-region-names = "text", "data", "heap";
+		status = "disabled";
+	};
+	dcpext1: dcpext1 {
+		compatible = "apple,t6041-dcpext", "apple,dcpext";
+		reg = <0x6 0x02e00000 0x0 0x4000>;
+		memory-region = <&dcpext1_text>, <&dcpext1_data>, <&dcpext1_heap>;
+		memory-region-names = "text", "data", "heap";
+		status = "disabled";
+	};
+};

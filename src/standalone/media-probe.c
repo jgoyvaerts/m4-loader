@@ -112,7 +112,8 @@ static int pmgr_ps(const char *name, uint32_t offset, uint32_t id, uint32_t pare
 
 static int base_gate(void)
 {
-    return HAS("/chosen", "firmware-version", "mBoot-18000.161.10") &&
+    return (HAS("/chosen", "firmware-version", "mBoot-18000.161.10") ||
+            HAS("/chosen", "firmware-version", "mBoot-18000.161.10.701.1")) &&
            HASARR("/arm-io", "ranges", arm_io_ranges);
 }
 static int aop_gate(void)

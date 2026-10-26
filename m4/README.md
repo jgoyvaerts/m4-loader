@@ -8,6 +8,7 @@ Our loader code is in `src/standalone/` and the `j616s_*` files of `src/`. This 
 | `LAYOUT.md`, `BOOT-ABI.md` | the loader/kernel layout contract and the Boot ABI v1 (as of N1; the Linux side keeps the current BOOT-ABI.md) |
 | `build.sh`, `env.sh`, `tools/build-rev11.py`, `tools/loader-layout.py` | the build (see the header of `build.sh`) |
 | `check.sh`, `objhash.sh`, `objcmp.sh`, `tests/`, `reference/` | the tests and the rev 13 / rev 14 reference hashes |
+| `tests/dcpext/` | `m4_dcpext_fixup()` (dcpext0/1 firmware memory from the ADT into the `board.dtb` placeholders): `run-dcpext-test.sh TREE ADT [ADT-701] WORK`, `SAN=1 FUZZ=N` for ASan/UBSan and fuzzed ADTs; `check.sh dcpext` runs it |
 | `docker/Dockerfile` | the container recipe |
 | `tools/privatize-tree.py`, `gates-unit.py`, `level1-install.py`, `audit-tree.py` | per-unit and per-install values: split out, regenerate, check |
 | `tools/verify-repo.sh`, `tools/add-rev.sh` | prove a tag byte for byte; add a rev as a commit and re-run the checks |

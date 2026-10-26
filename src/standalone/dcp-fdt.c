@@ -34,7 +34,9 @@ static const uint64_t disp0_reg[] = {0x200000000, 0x4000000, 0x202240000, 0x1000
                                      0x304800000, 0xbc000};
 /* ADT order is not-empty, empty per pair; emitted as empty, not-empty. */
 static const uint32_t dcp_irq[] = {0x478, 0x477, 0x47a, 0x479};
-static const char boot_firmware[] = "mBoot-18000.161.10";
+/* The boot firmware that loads the 25G83 firmware: macOS 26.6.2's, and the same build as a stub installed from Recovery
+ * (25G241) reports it. */
+static const char *const boot_firmware[] = {"mBoot-18000.161.10", "mBoot-18000.161.10.701.1"};
 
 struct region { uint64_t pa, size, iova[3]; uint32_t users; };
 
@@ -46,6 +48,13 @@ static int adt_bytes(const char *path, const char *key, const void *want, uint32
     return p && len >= bytes && !memcmp(p, want, bytes);
 }
 
+static int adt_boot_firmware(void)
+{
+    for (unsigned i = 0; i < sizeof(boot_firmware) / sizeof(*boot_firmware); i++)
+        if (adt_bytes("/chosen", "firmware-version", boot_firmware[i], strlen(boot_firmware[i]) + 1)) return 1;
+    return 0;
+}
+
 static int adt_regs(const char *path, const uint64_t *want, unsigned words)
 {
     return adt_bytes(path, "reg", want, words * sizeof(*want));
@@ -55,7 +64,7 @@ static int adt_layout(void)
 {
     const uint64_t range[] = {0, ARMIO};
     const uint32_t one = 1, dart_irq = 0x442, dcp_sid = 0x17, piodma_sid = 0x10;
-    return adt_bytes("/chosen", "firmware-version", boot_firmware, sizeof(boot_firmware)) &&
+    return adt_boot_firmware() &&
            adt_bytes("/arm-io", "ranges", range, sizeof(range)) &&
            adt_regs("/arm-io/dcp", dcp_reg, 2) &&
            adt_bytes("/arm-io/dcp", "interrupts", dcp_irq, sizeof(dcp_irq)) &&
@@ -356,9 +365,6 @@ static void delete_pool(void *t)
 /* The DTS carries the DCP/DART/mailbox/display nodes disabled and POOL region placeholders. An accepted capture
  * adopts the placeholders (same names, reg and iommu-addresses rev 10 emitted), fills the three memory-region lists
  * and enables the five stage-3 nodes. Otherwise the pool is deleted and every node stays disabled. */
-/* The boot firmware that loads the 25G83 GPU firmware: macOS 26.6.2's, and the same build as a stub installed from
- * Recovery reports it. The driver proves the build from the loaded TEXT (fw-text); the version only names it. */
-static const char *const gpu_boot_firmware[] = {"mBoot-18000.161.10", "mBoot-18000.161.10.701.1"};
 
 static int adt_u64(int node, const char *key, uint64_t *v)
 {
@@ -532,10 +538,10 @@ int m4_gpu_fixup(void *t, size_t capacity)
 {
     const uint32_t version[] = {26, 6, 2};
     const char *why = NULL;
-    int ret, known = 0;
+    int ret, known;
     if (fdt_path_offset(t, "gpu") < 0) return 0;
-    for (unsigned i = 0; i < sizeof(gpu_boot_firmware) / sizeof(*gpu_boot_firmware); i++)
-        known |= adt_bytes("/chosen", "firmware-version", gpu_boot_firmware[i], strlen(gpu_boot_firmware[i]) + 1);
+    /* The driver proves the GPU firmware build from the loaded TEXT (fw-text); the version only names it. */
+    known = adt_boot_firmware();
     int sgx = adt_path_offset(adt, "/arm-io/sgx"), asc = adt_path_offset(adt, "/arm-io/gfx-asc");
     /* The DCP and media fix-ups leave the tree packed. */
     if ((ret = fdt_open_into(t, t, (int)capacity)) < 0) return ret;
@@ -555,6 +561,203 @@ int m4_gpu_fixup(void *t, size_t capacity)
     int chosen = fdt_path_offset(t, "/chosen");
     if (chosen >= 0 && (ret = fdt_setprop_string(t, chosen, "m4,gpu", why ? why : "filled")) < 0) return ret;
     return fdt_pack(t) ? -1 : !!why;
+}
+
+/* ---------------------------------------------------------------- external DCPs
+ * dcpext0/dcpext1 (HDMI, USB-C DisplayPort) run iBoot's firmware, loaded before Linux like the internal DCP's. Their
+ * firmware memory is per unit and per macOS: board.dtb describes dcpextN with a memory-region list of three disabled
+ * placeholders (text, data, heap) and the loader fills them from /arm-io/dcpextN/iop-dcpextN-nub segment-ranges.
+ * Nothing else is touched: dcpextN, its DART and mailbox stay disabled (they are enabled after boot, in order), and no
+ * handoff marker is published, because the loader neither reads nor locks the dcpext DARTs. A tree without
+ * placeholders (the memory written into it statically) is left alone. A unit whose ADT is not the known layout loses
+ * its placeholders and memory-region, so its node stays valid and without firmware memory.
+ * /chosen m4,dcpext = <unit0 unit1>: 0 filled, 1 no placeholders, 2 memory already static, 3 unknown boot firmware,
+ * 4 ADT layout differs, 5 a region lies in Linux RAM (or the /memory cells cannot be read). */
+#define DCPEXT_UNITS 2u
+#define DCPEXT_REGIONS 3u
+enum { DCPEXT_FILLED, DCPEXT_NONE, DCPEXT_STATIC, DCPEXT_FIRMWARE, DCPEXT_LAYOUT, DCPEXT_RAM };
+
+/* ADT segments: __TEXT, __DATA, __OS_LOG (per boot, left out as for the internal DCP) and the heap. */
+static const char dcpext_segment_names[] = "__TEXT;__DATA;__OS_LOG;unknown";
+static const unsigned dcpext_segment[DCPEXT_REGIONS] = {0, 1, 3};
+static const char *const dcpext_region[DCPEXT_REGIONS] = {"text", "data", "heap"};
+
+struct dcpext_seg { uint64_t phys, iova, size; };
+
+/* segment-ranges entries: phys, iova, remap (u64 each), size, flags (u32 each). The device address of a segment is its
+ * remap address minus 1 << 40; sizes are rounded up to 16 KiB. */
+static int dcpext_adt(unsigned unit, struct dcpext_seg *out)
+{
+    char path[48];
+    uint32_t len, running;
+    snprintf(path, sizeof(path), "/arm-io/dcpext%u/iop-dcpext%u-nub", unit, unit);
+    int nub = adt_path_offset(adt, path);
+    const uint8_t *seg = nub < 0 ? NULL : adt_getprop(adt, nub, "segment-ranges", &len);
+    uint32_t nlen, rlen;
+    const char *names = nub < 0 ? NULL : adt_getprop(adt, nub, "segment-names", &nlen);
+    const uint32_t *run = nub < 0 ? NULL : adt_getprop(adt, nub, "running", &rlen);
+    if (!seg || len != 4 * 32 || !names || nlen != sizeof(dcpext_segment_names) ||
+        memcmp(names, dcpext_segment_names, nlen) || !run || rlen != 4)
+        return -1;
+    memcpy(&running, run, 4);
+    if (running != 1) return -1;
+    for (unsigned i = 0; i < DCPEXT_REGIONS; i++) {
+        uint64_t phys, remap;
+        uint32_t size;
+        const uint8_t *e = seg + dcpext_segment[i] * 32;
+        memcpy(&phys, e, 8);
+        memcpy(&remap, e + 16, 8);
+        memcpy(&size, e + 24, 4);
+        if (!phys || (phys & 0x3fff) || phys >= (UINT64_C(1) << 48) || !size || size > 0x10000000u || (remap & 0x3fff) ||
+            (remap & ~UINT64_C(0xffffffff)) != UINT64_C(0x10000000000))
+            return -1;
+        out[i] = (struct dcpext_seg){phys, remap & 0xffffffff, (size + 0x3fffu) & ~0x3fffu};
+    }
+    for (unsigned i = 0; i < DCPEXT_REGIONS; i++)
+        for (unsigned j = i + 1; j < DCPEXT_REGIONS; j++)
+            if (out[i].phys < out[j].phys + out[j].size && out[j].phys < out[i].phys + out[i].size) return -1;
+    return 0;
+}
+
+/* Does [phys, phys + size) meet a /memory range? A root without 2/2 cells cannot be checked and counts as RAM. */
+static int dcpext_in_ram(void *t, uint64_t phys, uint64_t size)
+{
+    int node;
+    if (fdt_address_cells(t, 0) != 2 || fdt_size_cells(t, 0) != 2) return 1;
+    fdt_for_each_subnode(node, t, 0) {
+        const char *type = fdt_getprop(t, node, "device_type", NULL);
+        int len;
+        const fdt32_t *r = type && !strcmp(type, "memory") ? fdt_getprop(t, node, "reg", &len) : NULL;
+        for (int i = 0; r && i + 16 <= len; i += 16, r += 4) {
+            uint64_t b = ((uint64_t)fdt32_to_cpu(r[0]) << 32) | fdt32_to_cpu(r[1]);
+            uint64_t s = ((uint64_t)fdt32_to_cpu(r[2]) << 32) | fdt32_to_cpu(r[3]);
+            if (phys < b + s && b < phys + size) return 1;
+        }
+    }
+    return 0;
+}
+
+/* The unit (0 or 1) whose ADT register base is `phys`, or -1. */
+static int dcpext_unit_of(uint64_t phys)
+{
+    for (unsigned unit = 0; unit < DCPEXT_UNITS; unit++) {
+        char path[24];
+        uint32_t len;
+        snprintf(path, sizeof(path), "/arm-io/dcpext%u", unit);
+        int dev = adt_path_offset(adt, path);
+        const uint64_t *r = dev < 0 ? NULL : adt_getprop(adt, dev, "reg", &len);
+        if (r && len >= 16 && r[0] + ARMIO == phys) return (int)unit;
+    }
+    return -1;
+}
+
+/* The placeholders of a device node: its memory-region phandles, three distinct disabled children of /reserved-memory.
+ * Anything else is memory the tree already describes and is left alone. */
+static int dcpext_placeholders(void *t, int dev, uint32_t ph[DCPEXT_REGIONS])
+{
+    int len, resv = fdt_path_offset(t, "/reserved-memory");
+    const fdt32_t *list = fdt_getprop(t, dev, "memory-region", &len);
+    if (!list) return DCPEXT_NONE;
+    if (len != DCPEXT_REGIONS * 4 || resv < 0) return DCPEXT_STATIC;
+    for (unsigned i = 0; i < DCPEXT_REGIONS; i++) {
+        ph[i] = fdt32_to_cpu(list[i]);
+        int node = fdt_node_offset_by_phandle(t, ph[i]);
+        const char *st = node < 0 ? NULL : fdt_getprop(t, node, "status", NULL);
+        if (!st || strcmp(st, "disabled") || fdt_parent_offset(t, node) != resv) return DCPEXT_STATIC;
+        for (unsigned j = 0; j < i; j++) if (ph[j] == ph[i]) return DCPEXT_STATIC;
+    }
+    return DCPEXT_FILLED;
+}
+
+/* Refused: the placeholders go and the node keeps no firmware memory. */
+static int dcpext_drop(void *t, uint32_t dev_ph, const uint32_t ph[DCPEXT_REGIONS])
+{
+    int ret, node;
+    for (unsigned i = 0; i < DCPEXT_REGIONS; i++)
+        if ((node = fdt_node_offset_by_phandle(t, ph[i])) >= 0 && (ret = fdt_del_node(t, node)) < 0) return ret;
+    if ((node = fdt_node_offset_by_phandle(t, dev_ph)) < 0) return node;
+    if ((ret = fdt_delprop(t, node, "memory-region")) < 0) return ret;
+    ret = fdt_delprop(t, node, "memory-region-names");
+    return ret == -FDT_ERR_NOTFOUND ? 0 : ret;
+}
+
+#define NODE(v) do { if ((node = fdt_node_offset_by_phandle(t, (v))) < 0) return node; } while (0)
+
+/* One device node by phandle: sets *state and returns 0, or a libfdt error. */
+static int dcpext_unit(void *t, uint32_t dev_ph, unsigned unit, int known, int *state)
+{
+    static const uint32_t version[] = {26, 6, 2};
+    struct dcpext_seg seg[DCPEXT_REGIONS];
+    uint32_t ph[DCPEXT_REGIONS];
+    int ret, node;
+    NODE(dev_ph);
+    if ((*state = dcpext_placeholders(t, node, ph)) != DCPEXT_FILLED) return 0;
+    if (!known) *state = DCPEXT_FIRMWARE;
+    else if (dcpext_adt(unit, seg)) *state = DCPEXT_LAYOUT;
+    for (unsigned i = 0; *state == DCPEXT_FILLED && i < DCPEXT_REGIONS; i++)
+        if (dcpext_in_ram(t, seg[i].phys, seg[i].size)) *state = DCPEXT_RAM;
+    if (*state != DCPEXT_FILLED) return dcpext_drop(t, dev_ph, ph);
+    for (unsigned i = 0; i < DCPEXT_REGIONS; i++) {
+        char unitname[48];
+        uint32_t cells[5] = {dev_ph, (uint32_t)(seg[i].iova >> 32), (uint32_t)seg[i].iova,
+                             (uint32_t)(seg[i].size >> 32), (uint32_t)seg[i].size};
+        const uint64_t rg[] = {seg[i].phys, seg[i].size};
+        NODE(ph[i]);
+        if ((ret = reg_prop(t, node, rg, 2, 0)) < 0 || (ret = u32s(t, node, "iommu-addresses", cells, 5)) < 0)
+            return ret;
+        fdt_delprop(t, node, "status");
+        snprintf(unitname, sizeof(unitname), "dcpext%u-%s@%lx", unit, dcpext_region[i], (unsigned long)seg[i].phys);
+        if ((ret = fdt_set_name(t, node, unitname)) < 0) return ret;
+    }
+    NODE(dev_ph);
+    if ((ret = fdt_delprop(t, node, "memory-region-names")) < 0 && ret != -FDT_ERR_NOTFOUND) return ret;
+    for (unsigned i = 0; i < DCPEXT_REGIONS; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "dcp-map@%lx", (unsigned long)seg[i].phys);
+        NODE(dev_ph);
+        if ((ret = fdt_appendprop_string(t, node, "memory-region-names", name)) < 0) return ret;
+    }
+    NODE(dev_ph);
+    if ((ret = u32s(t, node, "apple,firmware-version", version, 3)) < 0) return ret;
+    NODE(dev_ph);
+    return u32s(t, node, "apple,firmware-compat", version, 3);
+}
+#undef NODE
+
+/* Fills the dcpext placeholders of board.dtb from the ADT. 0 done (nothing to do, filled or memory already static),
+ * 1 a unit was left without firmware memory (reason in /chosen m4,dcpext), <0 a tree error. */
+int m4_dcpext_fixup(void *t, size_t capacity)
+{
+    uint32_t phandle[DCPEXT_UNITS], record[DCPEXT_UNITS] = {DCPEXT_NONE, DCPEXT_NONE};
+    int unit_of[DCPEXT_UNITS] = {-1, -1}, found = 0, seen = 0, ret, node, left = 0, known;
+    known = adt_boot_firmware();
+    if ((ret = fdt_open_into(t, t, (int)capacity)) < 0) return ret;
+    /* the device nodes are found by their ADT register base, so no alias is needed; phandles first, edits after */
+    for (node = fdt_node_offset_by_compatible(t, -1, "apple,t6041-dcpext"); node >= 0;
+         node = fdt_node_offset_by_compatible(t, node, "apple,t6041-dcpext")) {
+        int len, unit;
+        const fdt32_t *r = fdt_getprop(t, node, "reg", &len);
+        if (!r || len < 8) continue;
+        unit = dcpext_unit_of(((uint64_t)fdt32_to_cpu(r[0]) << 32) | fdt32_to_cpu(r[1]));
+        if (unit < 0 || (seen & (1 << unit))) continue;
+        seen |= 1 << unit;
+        unit_of[found] = unit;
+        if ((ret = phandle_of(t, node, &phandle[found])) < 0) return ret;
+        found++;
+    }
+    for (int i = 0; i < found; i++) {
+        int state;
+        if ((ret = dcpext_unit(t, phandle[i], (unsigned)unit_of[i], known, &state)) < 0) return ret;
+        record[unit_of[i]] = (uint32_t)state;
+        left |= state > DCPEXT_STATIC;
+    }
+    if (found) {
+        fdt32_t v[DCPEXT_UNITS];
+        int chosen = fdt_path_offset(t, "/chosen");
+        for (unsigned i = 0; i < DCPEXT_UNITS; i++) v[i] = cpu_to_fdt32(record[i]);
+        if (chosen >= 0 && (ret = fdt_setprop(t, chosen, "m4,dcpext", v, sizeof(v))) < 0) return ret;
+    }
+    return fdt_pack(t) ? -1 : left;
 }
 
 int m4_dcp_fixup(void *t, size_t capacity, const struct m4_display_handoff *h)

@@ -156,8 +156,10 @@ void j616s_diag_run(void)
 #else
     const char *expected_system_fw = "mBoot-18000.161.10";
 #endif
-    if (strcmp(os_fw, "mBoot-18000.161.10") || strcmp(sys_fw, expected_system_fw) ||
-        strcmp(controller, "mcc,t6041")) {
+    /* macOS 26.6.2 installed from Recovery (25G241) reports the same OS firmware
+     * with a .701.1 suffix. */
+    if ((strcmp(os_fw, "mBoot-18000.161.10") && strcmp(os_fw, "mBoot-18000.161.10.701.1")) ||
+        strcmp(sys_fw, expected_system_fw) || strcmp(controller, "mcc,t6041")) {
         uart_puts("J616S-DIAG: outside the reviewed firmware/controller baseline");
         diag_stop();
     }

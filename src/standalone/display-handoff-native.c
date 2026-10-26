@@ -149,8 +149,10 @@ int m4_display_handoff_publish(void *tree,size_t capacity,void *scratch,size_t s
     m4_boot_profile_media_rc=media;
     m4_boot_profile_mark(M4_PROFILE_DISPLAY_MEDIA_FINISHED);
     int gpu=m4_gpu_fixup(tree,capacity);
+    int ext=m4_dcpext_fixup(tree,capacity);
     if(ret>0)ret=0; /* DCP left disabled: not an error of the publication */
     if(!ret)ret=media;
+    if(!ret&&ext<0)ret=ext; /* a dcpext unit left without firmware memory (1) is not an error either */
     if(!ret&&gpu<0)ret=gpu; /* another boot firmware (1) only leaves the GPU without a version */
     return ret;
 }
